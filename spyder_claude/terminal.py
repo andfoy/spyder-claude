@@ -1,0 +1,77 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright © Spyder Project Contributors
+# Licensed under the terms of the MIT License
+
+"""
+Run the Claude Code CLI in Spyder's terminal, connected to Spyder.
+
+Users sign in to Claude Code themselves, so this works with Claude accounts
+as well as API keys. Spyder only hosts the terminal and passes the MCP server
+connection with ``--mcp-config``, without changing the user's Claude Code
+configuration.
+"""
+
+# Standard library imports
+from __future__ import annotations
+
+import json
+import os
+import os.path as osp
+import shlex
+import shutil
+import tempfile
+
+# Local imports
+from spyder_claude.protocol import MCP_SERVER_NAME
+
+
+class MCPConfigFile:
+    """
+    MCP configuration file for the Claude Code CLI.
+
+    The file contains the server token, so it's only readable by the user and
+    it's removed when Spyder closes. It can't be passed on the command line
+    instead, where other users could see it in the process list.
+    """
+
+    def __init__(self) -> None:
+        self._directory: str | None = None
+
+    @property
+    def path(self) -> str | None:
+        if self._directory is None:
+            return None
+        return osp.join(self._directory, "mcp.json")
+
+    def write(self, connection_info: dict) -> str:
+        """Write the config for ``connection_info`` and return its path."""
+        if self._directory is None:
+            # mkdtemp creates the directory with mode 0700
+            self._directory = tempfile.mkdtemp(prefix="spyder-claude-")
+
+        config = {
+            "mcpServers": {
+                MCP_SERVER_NAME: {
+                    "type": "http",
+                    "url": connection_info["url"],
+                    "headers": connection_info["headers"],
+                }
+            }
+        }
+        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(config, f)
+        return self.path
+
+    def remove(self) -> None:
+        if self._directory is not None:
+            shutil.rmtree(self._directory, ignore_errors=True)
+            self._directory = None
+
+
+def claude_code_command(executable: str, config_path: str) -> str:
+    """Shell command that starts Claude Code connected to Spyder."""
+    return (
+        f"{shlex.quote(executable)} --mcp-config {shlex.quote(config_path)}"
+    )
