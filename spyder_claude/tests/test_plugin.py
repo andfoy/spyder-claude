@@ -130,8 +130,14 @@ def test_session_connects_to_spyder(
     assert (session.console_mode, session.console_id) == ("specific", "1/A")
     assert widget.console_button.text() == "Console 1/A"
 
-    # The session's id is the conversation's
+    # Claude Code gets guidance about Spyder when the session starts, and
+    # can't run Python from its shell
     text = read_terminal(term, qtbot)
+    assert "FAKE CLAUDE CONTEXT: You're running inside Spyder" in text
+    assert "FAKE CLAUDE PYTHON IN SHELL DENIED: True" in text
+    assert "resumed" not in text
+
+    # The session's id is the conversation's
     assert f"FAKE CLAUDE SESSION: {session.id}" in text
     uuid.UUID(session.id)
 
@@ -181,14 +187,18 @@ def test_session_connects_to_spyder(
     qtbot.wait(2000)
     assert not widget.get_terms()
 
-    # Resuming passes --continue
+    # Resuming passes --continue. Python in the shell can be allowed.
+    plugin.set_conf("keep_python_in_spyder", False)
     widget.get_action("resume_claude_code_session_action").trigger()
     qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
     term = widget.get_terms()[0]
     qtbot.waitUntil(bar.isVisible, timeout=60000)
     bar.selected_button.click()
     wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
-    assert "FAKE CLAUDE ARGS: continue=True" in read_terminal(term, qtbot)
+    text = read_terminal(term, qtbot)
+    assert "FAKE CLAUDE ARGS: continue=True" in text
+    assert "FAKE CLAUDE PYTHON IN SHELL DENIED: False" in text
+    plugin.set_conf("keep_python_in_spyder", True)
     assert widget.tabwidget.tabText(0) == "Claude 2"
 
 
@@ -242,6 +252,15 @@ def test_session_consoles(main_window, qtbot, tmp_path, fake_claude):
     )
     own = [c for c in consoles if c["id"] == session.console_id][0]
     assert own["created_by"] == "you"
+
+    # It runs code in the session's folder, like Claude Code's shell
+    assert own["cwd"] == str(tmp_path)
+
+    # Spyder's working directory can be set to the session's folder
+    workingdirectory = main_window.get_plugin("workingdir")
+    assert workingdirectory.get_workdir() != str(tmp_path)
+    widget.set_workdir_action.trigger()
+    assert workingdirectory.get_workdir() == str(tmp_path)
     output = call_as_session(
         qtbot,
         mcp_server,

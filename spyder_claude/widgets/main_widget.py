@@ -29,6 +29,8 @@ from spyder_claude.widgets.console_question import ConsoleQuestionBar
 class ClaudeCodeWidgetActions:
     ResumeSession = "resume_claude_code_session_action"
     ResumeConversation = "resume_claude_code_conversation_action"
+    SetWorkingDirectory = "set_working_directory_to_session_folder_action"
+    KeepPythonInSpyder = "keep_python_in_spyder_consoles_action"
 
 
 CONSOLE_MODE_TEXTS = {
@@ -85,6 +87,16 @@ class ClaudeCodeWidget(TerminalMainWidget):
     """
     The pane is shown for the first time, so the sessions open when Spyder
     closed can be restored (or a new one started).
+    """
+
+    sig_working_directory_requested = Signal(str)
+    """
+    The user wants Spyder's working directory to be a session's folder.
+
+    Parameters
+    ----------
+    path: str
+        Folder of the session.
     """
 
     sig_session_closed = Signal(str)
@@ -150,7 +162,6 @@ class ClaudeCodeWidget(TerminalMainWidget):
         self.tabwidget.currentChanged.connect(
             lambda _: self.update_session_state()
         )
-        self.update_session_state()
 
         texts = {
             TerminalMainWidgetActions.NewTerminalForCWD: _(
@@ -191,6 +202,31 @@ class ClaudeCodeWidget(TerminalMainWidget):
                 menu=self.get_options_menu(),
                 section=TerminalMainWidgetMenuSections.New,
             )
+
+        self.set_workdir_action = self.create_action(
+            ClaudeCodeWidgetActions.SetWorkingDirectory,
+            text=_("Set working directory to this session's folder"),
+            tip=_(
+                "Change Spyder's working directory to the folder where the "
+                "current session started"
+            ),
+            triggered=self._request_working_directory,
+        )
+        keep_python_action = self.create_action(
+            ClaudeCodeWidgetActions.KeepPythonInSpyder,
+            text=_("Run Python only in Spyder's consoles"),
+            tip=_(
+                "Don't let Claude run Python from its shell, so the code it "
+                "runs and its results are in Spyder's consoles. Applies to "
+                "new sessions."
+            ),
+            toggled=True,
+            option="keep_python_in_spyder",
+        )
+        for action in [self.set_workdir_action, keep_python_action]:
+            self.add_item_to_menu(action, menu=self.get_options_menu())
+
+        self.update_session_state()
 
     def change_visibility(self, enable, force_focus=None):
         super().change_visibility(enable, force_focus)
@@ -382,6 +418,9 @@ class ClaudeCodeWidget(TerminalMainWidget):
 
         session = self.get_session()
         self.console_button.setEnabled(session is not None)
+        self.set_workdir_action.setEnabled(
+            session is not None and bool(session.cwd)
+        )
         self.console_button.setText(
             self._describe_console(session) if session else _("Console")
         )
@@ -394,6 +433,11 @@ class ClaudeCodeWidget(TerminalMainWidget):
                 )
         else:
             self.question_bar.dismiss()
+
+    def _request_working_directory(self) -> None:
+        session = self.get_session()
+        if session is not None and session.cwd:
+            self.sig_working_directory_requested.emit(session.cwd)
 
     def _describe_console(self, session: Session) -> str:
         if session.console_id is not None:

@@ -39,8 +39,13 @@ from spyder_claude.conversations import (
     last_conversation_in,
     list_conversations,
 )
+from spyder_claude.session_context import make_guidance
 from spyder_claude.sessions import ConsoleMode, Session
-from spyder_claude.terminal import MCPConfigFile, claude_code_command
+from spyder_claude.terminal import (
+    MCPConfigFile,
+    claude_code_command,
+    claude_settings,
+)
 from spyder_claude.widgets.conversations_dialog import ConversationsDialog
 from spyder_claude.widgets.main_widget import ClaudeCodeWidget
 
@@ -76,7 +81,7 @@ class ClaudeCode(TerminalPlugin):
     WIDGET_CLASS = ClaudeCodeWidget
     CONF_SECTION = NAME
     CONF_FILE = True
-    CONF_VERSION = "0.3.0"
+    CONF_VERSION = "0.4.0"
     CONF_DEFAULTS = [
         (CONF_SECTION, {
             **TERMINAL_OPTIONS,
@@ -89,6 +94,11 @@ class ClaudeCode(TerminalPlugin):
             "open_sessions": [],
             # Conversations open when each project closed, by project path
             "project_sessions": {},
+            # Deny shell commands that run Python, so Claude runs it in
+            # Spyder's consoles
+            "keep_python_in_spyder": True,
+            # Commands to allow anyway, e.g. ["pytest"]
+            "allowed_python_commands": [],
         }),
         ("shortcuts", SHORTCUTS),
     ]
@@ -128,6 +138,9 @@ class ClaudeCode(TerminalPlugin):
         widget.sig_conversations_requested.connect(self.show_conversations)
         widget.sig_session_closed.connect(self._on_session_closed)
         widget.sig_console_setting_changed.connect(self._on_console_setting)
+        widget.sig_working_directory_requested.connect(
+            self._set_working_directory
+        )
         widget.set_console_lister(self._list_consoles)
 
     @on_plugin_available(plugin=Plugins.MCPServer)
@@ -441,6 +454,7 @@ class ClaudeCode(TerminalPlugin):
                 args.remove("--continue")
                 args += ["--resume", last.id]
 
+        resume_note = ""
         if "--resume" in args:
             # Conversations can only be resumed where they started
             conversation_id = args[args.index("--resume") + 1]
@@ -449,10 +463,7 @@ class ClaudeCode(TerminalPlugin):
             if conversation is not None:
                 path = conversation.cwd if conversation.can_resume() else path
                 session.title = conversation.title
-                args += [
-                    "--append-system-prompt",
-                    self._resume_note(conversation),
-                ]
+                resume_note = self._resume_note(conversation)
         else:
             session = Session(widget.new_session_name())
             args = ["--session-id", session.id] + args
@@ -465,8 +476,33 @@ class ClaudeCode(TerminalPlugin):
             session.id,
             mcp_server.get_connection_info(session.id, session.name),
         )
+
+        # Hooks that tell Claude how to work in Spyder (also when resuming a
+        # conversation, unlike --append-system-prompt) and keep its Python in
+        # Spyder's consoles
+        keep_python = self.get_conf("keep_python_in_spyder")
+        context_path = self._mcp_config.write_json(
+            session.id,
+            "context",
+            {
+                "guidance": make_guidance(keep_python),
+                "resume_note": resume_note,
+            },
+        )
+        settings_path = self._mcp_config.write_json(
+            session.id,
+            "settings",
+            claude_settings(
+                context_path,
+                keep_python,
+                self.get_conf("allowed_python_commands"),
+            ),
+        )
         command = claude_code_command(
-            self.get_conf("claude_command"), session.config_path, args
+            self.get_conf("claude_command"),
+            session.config_path,
+            args,
+            settings_path=settings_path,
         )
         widget.start_session(command, session, path or None)
 
@@ -606,10 +642,20 @@ class ClaudeCode(TerminalPlugin):
         caller = next(
             (c for c in mcp_server.get_clients() if c.id == session.id), None
         )
+        # It starts in the session's folder, so relative paths in its code
+        # are resolved like in Claude's shell
+        wdir = session.cwd if session.cwd and osp.isdir(session.cwd) else None
         with calling_as(caller):
-            future = ipyconsole.new_console(name=session.name)
+            future = ipyconsole.new_console(name=session.name, wdir=wdir)
         future.add_done_callback(on_ready)
         return result
+
+    def _set_working_directory(self, path: str) -> None:
+        workingdirectory = self.get_plugin(
+            Plugins.WorkingDirectory, error=False
+        )
+        if workingdirectory is not None and osp.isdir(path):
+            workingdirectory.chdir(path, sender_plugin=self.NAME)
 
     def _list_consoles(self) -> list:
         ipyconsole = self.get_plugin(Plugins.IPythonConsole, error=False)
