@@ -270,6 +270,10 @@ class ClaudeCodeWidget(TerminalMainWidget):
     ) -> None:
         """Ask the plugin to start a new Claude Code session."""
         self._session_requested = True
+
+        # Once the pane is in use, sessions are restored when needed (e.g.
+        # when a project opens) instead of the first time it's shown
+        self._restored = True
         self.sig_session_requested.emit(path or "", args or [])
 
     def get_default_path(self) -> str:
@@ -332,6 +336,21 @@ class ClaudeCodeWidget(TerminalMainWidget):
         if term is None:
             term = self.get_current_term()
         return getattr(term, "claude_session", None)
+
+    def get_term_for_session(self, session_id: str):
+        """Terminal of a session, if it's open."""
+        for term in self.get_terms():
+            session = self.get_session(term)
+            if session is not None and session.id == session_id:
+                return term
+        return None
+
+    def sessions_restored(self) -> bool:
+        """
+        Whether the pane is in use: it restored the sessions open when
+        Spyder closed (the first time it was shown) or started one.
+        """
+        return self._restored
 
     def get_sessions(self) -> list[Session]:
         return [

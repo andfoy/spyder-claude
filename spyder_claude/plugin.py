@@ -16,9 +16,13 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 import logging
+import os
+import os.path as osp
+import time
 
 # Third-party imports
 from qtpy.QtCore import QTimer
+from qtpy.QtWidgets import QMessageBox
 from spyder.api.plugin_registration.decorators import (
     on_plugin_available,
     on_plugin_teardown,
@@ -72,7 +76,7 @@ class ClaudeCode(TerminalPlugin):
     WIDGET_CLASS = ClaudeCodeWidget
     CONF_SECTION = NAME
     CONF_FILE = True
-    CONF_VERSION = "0.2.0"
+    CONF_VERSION = "0.3.0"
     CONF_DEFAULTS = [
         (CONF_SECTION, {
             **TERMINAL_OPTIONS,
@@ -83,6 +87,8 @@ class ClaudeCode(TerminalPlugin):
             # Conversations open when Spyder closed, as dicts with their
             # "id" and "cwd"
             "open_sessions": [],
+            # Conversations open when each project closed, by project path
+            "project_sessions": {},
         }),
         ("shortcuts", SHORTCUTS),
     ]
@@ -112,6 +118,10 @@ class ClaudeCode(TerminalPlugin):
         self._pending_sessions: list[tuple[str, list[str]]] = []
         self._sessions: dict[str, Session] = {}
 
+        # When each console started, to tell resumed conversations if the
+        # consoles they used were restarted
+        self._console_started: dict[int, float] = {}
+
         widget = self.get_widget()
         widget.sig_session_requested.connect(self._on_session_requested)
         widget.sig_restore_requested.connect(self.restore_sessions)
@@ -137,12 +147,28 @@ class ClaudeCode(TerminalPlugin):
     @on_plugin_available(plugin=Plugins.IPythonConsole)
     def on_ipython_console_available(self):
         ipyconsole = self.get_plugin(Plugins.IPythonConsole)
+        ipyconsole.sig_shellwidget_created.connect(self._on_console_created)
         ipyconsole.sig_shellwidget_deleted.connect(self._on_console_closed)
+        for client in ipyconsole.get_clients():
+            self._on_console_created(client.shellwidget)
 
     @on_plugin_teardown(plugin=Plugins.IPythonConsole)
     def on_ipython_console_teardown(self):
         ipyconsole = self.get_plugin(Plugins.IPythonConsole)
+        ipyconsole.sig_shellwidget_created.disconnect(self._on_console_created)
         ipyconsole.sig_shellwidget_deleted.disconnect(self._on_console_closed)
+
+    @on_plugin_available(plugin=Plugins.Projects)
+    def on_projects_available(self):
+        projects = self.get_plugin(Plugins.Projects)
+        projects.sig_project_loaded.connect(self._on_project_loaded)
+        projects.sig_project_closed.connect(self._on_project_closed)
+
+    @on_plugin_teardown(plugin=Plugins.Projects)
+    def on_projects_teardown(self):
+        projects = self.get_plugin(Plugins.Projects)
+        projects.sig_project_loaded.disconnect(self._on_project_loaded)
+        projects.sig_project_closed.disconnect(self._on_project_closed)
 
     # These override (and disable) the terminal plugin's handlers: this
     # plugin has no preferences page yet, and remote servers can't reach
@@ -157,14 +183,7 @@ class ClaudeCode(TerminalPlugin):
         pass
 
     def on_close(self, cancelable=False):
-        # Remember the open conversations to resume them next time
-        self.set_conf(
-            "open_sessions",
-            [
-                {"id": session.id, "cwd": session.cwd}
-                for session in self.get_widget().get_sessions()
-            ],
-        )
+        self.save_open_sessions()
         result = super().on_close(cancelable)
         self._mcp_config.remove()
         return result
@@ -210,6 +229,7 @@ class ClaudeCode(TerminalPlugin):
         dialog = ConversationsDialog(
             list_conversations(),
             {session.id for session in widget.get_sessions()},
+            project=self._get_project_path(),
             parent=widget,
         )
         if dialog.exec_():
@@ -219,21 +239,172 @@ class ClaudeCode(TerminalPlugin):
 
     def restore_sessions(self) -> None:
         """
-        Resume the conversations open when Spyder closed, or start a new
-        session if there are none.
+        Resume the conversations open when Spyder closed and the ones of the
+        current project, or start a new session if there are none.
         """
-        restored = False
+        saved = []
         if self.get_conf("restore_sessions"):
-            for saved in self.get_conf("open_sessions"):
-                conversation = find_conversation(saved.get("id", ""))
-                # Sessions closed before using them have nothing to resume
-                if conversation is not None and conversation.can_resume():
-                    self.get_widget().request_session(
-                        args=["--resume", conversation.id]
-                    )
-                    restored = True
-        if not restored:
+            saved = list(self.get_conf("open_sessions"))
+            project = self._get_project_path()
+            if project is not None:
+                saved += self._get_saved_project_sessions(project)
+        if not self._resume_saved(saved):
             self.get_widget().request_session()
+
+    def save_open_sessions(self) -> None:
+        """
+        Remember the open conversations to resume them next time, saving
+        the ones of the open project with the project.
+        """
+        sessions = self.get_widget().get_sessions()
+        project = self._get_project_path()
+        if project is not None:
+            project_sessions = self._sessions_in(project, sessions)
+            self._save_project_sessions(project, project_sessions)
+            sessions = [s for s in sessions if s not in project_sessions]
+        self.set_conf("open_sessions", self._describe_sessions(sessions))
+
+    # ---- Projects
+    # -------------------------------------------------------------------------
+    def _get_project_path(self) -> str | None:
+        projects = self.get_plugin(Plugins.Projects, error=False)
+        if projects is None:
+            return None
+        return projects.get_active_project_path()
+
+    @staticmethod
+    def _project_key(path: str) -> str:
+        return osp.normcase(osp.realpath(path))
+
+    def _sessions_in(self, folder: str, sessions=None) -> list[Session]:
+        """Sessions whose conversations started in ``folder``."""
+        if sessions is None:
+            sessions = self.get_widget().get_sessions()
+        folder = self._project_key(folder)
+        return [
+            session
+            for session in sessions
+            if session.cwd
+            and (
+                self._project_key(session.cwd) == folder
+                or self._project_key(session.cwd).startswith(folder + os.sep)
+            )
+        ]
+
+    @staticmethod
+    def _describe_sessions(sessions: list[Session]) -> list[dict]:
+        return [{"id": session.id, "cwd": session.cwd} for session in sessions]
+
+    def _get_saved_project_sessions(self, project: str) -> list[dict]:
+        return self.get_conf("project_sessions").get(
+            self._project_key(project), []
+        )
+
+    def _save_project_sessions(
+        self, project: str, sessions: list[Session]
+    ) -> None:
+        saved = dict(self.get_conf("project_sessions"))
+        saved[self._project_key(project)] = self._describe_sessions(sessions)
+        self.set_conf("project_sessions", saved)
+
+    def _on_project_closed(self, path: str) -> None:
+        """
+        Close the sessions of the project that closed, remembering them to
+        resume them when it's opened again.
+        """
+        if not isinstance(path, str) or not path:
+            return
+        sessions = self._sessions_in(path)
+        self._save_project_sessions(path, sessions)
+
+        # Ask before stopping sessions that are using Spyder
+        mcp_server = self.get_plugin(Plugins.MCPServer)
+        busy = mcp_server.get_busy_clients()
+        working = [session for session in sessions if session.id in busy]
+        if working and not self._confirm_close(working):
+            sessions = [s for s in sessions if s not in working]
+
+        widget = self.get_widget()
+        for session in sessions:
+            term = widget.get_term_for_session(session.id)
+            if term is not None:
+                widget.close_term(term=term)
+
+    def _confirm_close(self, sessions: list[Session]) -> bool:
+        names = ", ".join(session.name for session in sessions)
+        answer = QMessageBox.question(
+            self.get_widget(),
+            _("Claude Code"),
+            _(
+                "{} of the project being closed is running code or another "
+                "task in Spyder. Stop it and close its session?<br><br>"
+                "It can be resumed when you open the project again."
+            ).format(names),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _on_project_loaded(self, _path: str) -> None:
+        # After the consoles restart, which happens right after this signal
+        QTimer.singleShot(0, self._restore_project_sessions)
+
+    def _restore_project_sessions(self) -> None:
+        """Resume the conversations open when the project was closed."""
+        project = self._get_project_path()
+        widget = self.get_widget()
+        if project is None or not widget.sessions_restored():
+            # The pane restores them the first time it's shown
+            return
+        if self.get_conf("restore_sessions"):
+            self._resume_saved(self._get_saved_project_sessions(project))
+
+    def _resume_saved(self, saved: list[dict]) -> bool:
+        """
+        Resume the saved conversations that can be resumed and aren't open.
+        Returns whether any was resumed.
+        """
+        widget = self.get_widget()
+        open_ids = {session.id for session in widget.get_sessions()}
+        resumed = False
+        for item in saved:
+            conversation_id = item.get("id", "")
+            if conversation_id in open_ids:
+                continue
+            conversation = find_conversation(conversation_id)
+            # Sessions closed before using them have nothing to resume
+            if conversation is not None and conversation.can_resume():
+                open_ids.add(conversation_id)
+                widget.request_session(args=["--resume", conversation_id])
+                resumed = True
+        return resumed
+
+    def _resume_note(self, conversation) -> str:
+        """
+        Instructions for a resumed conversation about the state of Spyder's
+        consoles, which it can't see from its history.
+        """
+        # When the consoles open now started (closed ones are only
+        # forgotten later, once their kernels shut down)
+        ipyconsole = self.get_plugin(Plugins.IPythonConsole, error=False)
+        clients = ipyconsole.get_clients() if ipyconsole is not None else []
+        started = [
+            self._console_started.get(id(client.shellwidget), time.time())
+            for client in clients
+        ]
+        if started and conversation.updated.timestamp() < min(started):
+            return (
+                "This conversation was resumed in Spyder. All of Spyder's "
+                "IPython consoles were started after it last ran (e.g. "
+                "because its project was opened again), so the variables, "
+                "imports and figures it created there are gone. Check with "
+                "list_consoles and list_variables, and re-run the code you "
+                "need, before relying on earlier results."
+            )
+        return (
+            "This conversation was resumed in Spyder. Its IPython consoles "
+            "may have changed since it last ran; check with list_consoles "
+            "and list_variables before relying on earlier results."
+        )
 
     # ---- Private API
     # -------------------------------------------------------------------------
@@ -278,6 +449,10 @@ class ClaudeCode(TerminalPlugin):
             if conversation is not None:
                 path = conversation.cwd if conversation.can_resume() else path
                 session.title = conversation.title
+                args += [
+                    "--append-system-prompt",
+                    self._resume_note(conversation),
+                ]
         else:
             session = Session(widget.new_session_name())
             args = ["--session-id", session.id] + args
@@ -442,7 +617,11 @@ class ClaudeCode(TerminalPlugin):
             return []
         return ipyconsole.list_consoles()
 
+    def _on_console_created(self, shellwidget) -> None:
+        self._console_started[id(shellwidget)] = time.time()
+
     def _on_console_closed(self, shellwidget) -> None:
+        self._console_started.pop(id(shellwidget), None)
         # Wait until the console is removed from the list
         QTimer.singleShot(0, self._forget_closed_consoles)
 

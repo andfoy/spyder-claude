@@ -20,6 +20,7 @@ import uuid
 
 # Third-party imports
 import pytest
+from qtpy.QtWidgets import QMessageBox
 
 from spyder.plugins.ipythonconsole.tests.conftest import SHELL_TIMEOUT
 
@@ -54,6 +55,18 @@ def fake_claude(tmp_path):
     """Executable that runs fake_claude.py with this Python."""
     path = tmp_path / "claude"
     path.write_text(f"#!/bin/sh\nexec {sys.executable} {FAKE_CLAUDE} \"$@\"\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return str(path)
+
+
+@pytest.fixture
+def quiet_fake_claude(tmp_path):
+    """Like fake_claude, but without running code in Spyder."""
+    path = tmp_path / "quiet-claude"
+    path.write_text(
+        "#!/bin/sh\n"
+        f"FAKE_CLAUDE_SKIP_CODE=1 exec {sys.executable} {FAKE_CLAUDE} \"$@\"\n"
+    )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return str(path)
 
@@ -351,3 +364,98 @@ def test_resume_conversations(
 
     send_keys(term, "\r")
     qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
+
+
+def test_project_sessions(
+    main_window, qtbot, tmp_path, quiet_fake_claude, claude_config,
+    monkeypatch,
+):
+    """Projects resume the conversations they had open when closed."""
+    shell = main_window.ipyconsole.get_current_shellwidget()
+    qtbot.waitUntil(
+        lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT
+    )
+    project = tmp_path / "project"
+    (project / "analysis").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    in_project = save_conversation(
+        claude_config,
+        project / "analysis",
+        [{"type": "ai-title", "aiTitle": "Project work"}],
+    )
+    outside = save_conversation(claude_config, elsewhere)
+
+    plugin = main_window.get_plugin("claude_code")
+    plugin.set_conf("claude_command", quiet_fake_claude)
+    widget = plugin.get_widget()
+    projects = main_window.get_plugin("project_explorer")
+    qtbot.waitUntil(widget.server_is_ready, timeout=60000)
+
+    def open_ids():
+        return sorted(session.id for session in widget.get_sessions())
+
+    plugin.resume_conversation(in_project)
+    plugin.resume_conversation(outside)
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 2, timeout=60000)
+    for term in widget.get_terms():
+        wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    projects.open_project(path=str(project))
+    qtbot.wait(1000)
+
+    # The resume dialog shows the project's conversations by default
+    dialog = ConversationsDialog(
+        list_conversations(), project=str(project), parent=widget
+    )
+    visible = [
+        dialog.tree.topLevelItem(i).text(1)
+        for i in range(dialog.tree.topLevelItemCount())
+        if not dialog.tree.topLevelItem(i).isHidden()
+    ]
+    assert visible == [str(project / "analysis")]
+    dialog.project_only.setChecked(False)
+    assert dialog.tree.topLevelItem(1).isHidden() is False
+
+    # Closing the project closes its sessions, but not the others
+    projects.close_project()
+    qtbot.waitUntil(lambda: open_ids() == [outside], timeout=20000)
+
+    # Opening it again resumes them, telling Claude the consoles restarted
+    projects.open_project(path=str(project))
+    qtbot.waitUntil(
+        lambda: open_ids() == sorted([in_project, outside]), timeout=60000
+    )
+    term = widget.get_term_for_session(in_project)
+    wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    text = read_terminal(term, qtbot)
+    assert f"FAKE CLAUDE CWD: {project / 'analysis'}" in text
+    assert "consoles were started after it last ran" in " ".join(
+        text.split()
+    )
+
+    # Sessions using Spyder are only closed if the user agrees
+    mcp_server = main_window.get_plugin("mcp_server")
+    mcp_server._dispatcher._running[in_project] = 1
+    asked = []
+
+    def answer(*args):
+        asked.append(args)
+        return QMessageBox.No
+
+    monkeypatch.setattr(QMessageBox, "question", answer)
+    projects.close_project()
+    qtbot.wait(1000)
+    mcp_server._dispatcher._running[in_project] = 0
+    assert len(asked) == 1
+    assert open_ids() == sorted([in_project, outside])
+
+    # When Spyder closes, the project's sessions are saved with it.
+    # Restarting the consoles again so soon can crash Spyder's console in
+    # tests (a kernel thread is destroyed while running), and it isn't
+    # needed here.
+    projects.open_project(path=str(project), restart_console=False)
+    qtbot.wait(1000)
+    plugin.save_open_sessions()
+    assert [s["id"] for s in plugin.get_conf("open_sessions")] == [outside]
+    project_sessions = plugin._get_saved_project_sessions(str(project))
+    assert [s["id"] for s in project_sessions] == [in_project]

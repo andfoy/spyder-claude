@@ -50,6 +50,7 @@ def main() -> None:
     parser.add_argument("--continue", action="store_true")
     parser.add_argument("--resume")
     parser.add_argument("--session-id")
+    parser.add_argument("--append-system-prompt")
     args = parser.parse_args()
 
     with open(args.mcp_config) as f:
@@ -59,7 +60,9 @@ def main() -> None:
     print(f"FAKE CLAUDE RESUME: {args.resume}")
     print(f"FAKE CLAUDE SESSION: {args.session_id}")
     print(f"FAKE CLAUDE CWD: {os.getcwd()}")
-    asyncio.run(use_spyder(server))
+    print(f"FAKE CLAUDE NOTE: {args.append_system_prompt}")
+    if not os.environ.get("FAKE_CLAUDE_SKIP_CODE"):
+        asyncio.run(use_spyder(server))
     print("FAKE CLAUDE DONE")
     input()
 

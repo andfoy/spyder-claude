@@ -8,10 +8,13 @@
 # Standard library imports
 from __future__ import annotations
 
+import os
+import os.path as osp
 
 # Third-party imports
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QLineEdit,
@@ -35,6 +38,7 @@ class ConversationsDialog(QDialog):
         self,
         conversations: list[Conversation],
         open_ids: set[str] | None = None,
+        project: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -46,6 +50,13 @@ class ConversationsDialog(QDialog):
         self.search.setPlaceholderText(_("Search by title or folder"))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
+
+        # Show the conversations of the open project by default
+        self._project = project
+        self.project_only = QCheckBox(_("Only this project"), self)
+        self.project_only.setChecked(project is not None)
+        self.project_only.setVisible(project is not None)
+        self.project_only.toggled.connect(lambda: self._filter())
 
         self.tree = QTreeWidget(self)
         self.tree.setRootIsDecorated(False)
@@ -88,6 +99,7 @@ class ConversationsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.search)
+        layout.addWidget(self.project_only)
         layout.addWidget(self.tree)
         layout.addWidget(self.buttons)
 
@@ -106,12 +118,22 @@ class ConversationsDialog(QDialog):
         if self.get_conversation() is not None:
             super().accept()
 
+    def _in_project(self, folder: str) -> bool:
+        if not self.project_only.isChecked() or not self._project:
+            return True
+        project = osp.normcase(osp.realpath(self._project))
+        folder = osp.normcase(osp.realpath(folder)) if folder else ""
+        return folder == project or folder.startswith(project + os.sep)
+
     def _filter(self, *_args) -> None:
         words = self.search.text().lower().split()
         for index in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(index)
             haystack = (item.text(0) + " " + item.text(1)).lower()
-            item.setHidden(not all(word in haystack for word in words))
+            item.setHidden(
+                not all(word in haystack for word in words)
+                or not self._in_project(item.text(1))
+            )
 
         current = self.tree.currentItem()
         if current is None or current.isHidden():
