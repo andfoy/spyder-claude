@@ -34,7 +34,7 @@ jobs:
       QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu"
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install system libraries for Qt
         run: |
@@ -46,13 +46,13 @@ jobs:
             libxcb-xinerama0 libxcb-cursor0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Set up Node.js
         # To build spyder-terminal's web client
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "24"
 
@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-py${{ matrix.python-version }}
           path: junit.xml
