@@ -27,7 +27,7 @@ CONNECTION_INFO = {
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
 def test_config_file_is_private():
     config = MCPConfigFile()
-    path = config.write(CONNECTION_INFO)
+    path = config.write("session-1", CONNECTION_INFO)
     try:
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
         assert stat.S_IMODE(os.stat(osp.dirname(path)).st_mode) == 0o700
@@ -35,20 +35,29 @@ def test_config_file_is_private():
         config.remove()
 
 
-def test_config_file_contents_and_removal():
+def test_config_files_per_session():
     config = MCPConfigFile()
-    path = config.write(CONNECTION_INFO)
+    path = config.write("session-1", CONNECTION_INFO)
     with open(path) as f:
         assert json.load(f) == {
             "mcpServers": {"spyder": {"type": "http", **CONNECTION_INFO}}
         }
 
-    # Writing again reuses the same file
-    assert config.write(CONNECTION_INFO) == path
+    # Writing again reuses the session's file
+    assert config.write("session-1", CONNECTION_INFO) == path
+
+    # Other sessions get their own file in the same directory
+    other = config.write("session-2", CONNECTION_INFO)
+    assert other != path
+    assert osp.dirname(other) == osp.dirname(path)
+
+    config.remove("session-1")
+    assert not osp.exists(path)
+    assert osp.exists(other)
 
     config.remove()
     assert not osp.exists(osp.dirname(path))
-    assert config.path is None
+    assert config.get_path("session-2") is None
 
 
 def test_command():

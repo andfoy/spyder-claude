@@ -29,24 +29,28 @@ MCP_SERVER_NAME = "spyder"
 
 class MCPConfigFile:
     """
-    MCP configuration file for the Claude Code CLI.
+    MCP configuration files for the Claude Code CLI, one per session.
 
-    The file contains the server token, so it's only readable by the user and
-    it's removed when Spyder closes. It can't be passed on the command line
-    instead, where other users could see it in the process list.
+    The files contain the server token, so they're only readable by the user
+    and they're removed when their session ends or Spyder closes. The token
+    can't be passed on the command line instead, where other users could see
+    it in the process list.
     """
 
     def __init__(self) -> None:
         self._directory: str | None = None
 
-    @property
-    def path(self) -> str | None:
+    def get_path(self, session_id: str) -> str | None:
+        """Path of the config file of a session."""
         if self._directory is None:
             return None
-        return osp.join(self._directory, "mcp.json")
+        return osp.join(self._directory, f"mcp-{session_id}.json")
 
-    def write(self, connection_info: dict) -> str:
-        """Write the config for ``connection_info`` and return its path."""
+    def write(self, session_id: str, connection_info: dict) -> str:
+        """
+        Write the config of a session for ``connection_info`` and return its
+        path.
+        """
         if self._directory is None:
             # mkdtemp creates the directory with mode 0700
             self._directory = tempfile.mkdtemp(prefix="spyder-claude-")
@@ -60,15 +64,24 @@ class MCPConfigFile:
                 }
             }
         }
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        path = self.get_path(session_id)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(config, f)
-        return self.path
+        return path
 
-    def remove(self) -> None:
-        if self._directory is not None:
+    def remove(self, session_id: str | None = None) -> None:
+        """Remove the config of a session, or all of them."""
+        if self._directory is None:
+            return
+        if session_id is None:
             shutil.rmtree(self._directory, ignore_errors=True)
             self._directory = None
+            return
+        try:
+            os.remove(self.get_path(session_id))
+        except OSError:
+            pass
 
 
 def claude_code_command(
