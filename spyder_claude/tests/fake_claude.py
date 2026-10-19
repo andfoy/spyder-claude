@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+#
+# Copyright © Spyder Project Contributors
+# Licensed under the terms of the MIT License
+
+"""
+Stand-in for the Claude Code CLI, used by the plugin tests.
+
+Like Claude Code, it reads the MCP server from ``--mcp-config`` and connects
+to it. Then it lists the tools, runs some code in the console and waits for
+Enter before exiting.
+"""
+
+# Standard library imports
+import argparse
+import asyncio
+import json
+
+# Third-party imports
+import httpx2
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+
+CODE = "fake_claude_value = 6 * 7"
+
+
+async def use_spyder(server: dict) -> None:
+    async with httpx2.AsyncClient(
+        headers=server["headers"], timeout=60
+    ) as http:
+        async with streamable_http_client(
+            server["url"], http_client=http
+        ) as (read, write, *_):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools = await session.list_tools()
+                names = sorted(tool.name for tool in tools.tools)
+                print("FAKE CLAUDE TOOLS:", " ".join(names))
+
+                result = await session.call_tool(
+                    "execute_code", {"code": CODE}
+                )
+                print("FAKE CLAUDE EXECUTED, error:", result.is_error)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mcp-config", required=True)
+    parser.add_argument("--continue", action="store_true")
+    args = parser.parse_args()
+
+    with open(args.mcp_config) as f:
+        server = json.load(f)["mcpServers"]["spyder"]
+
+    print("FAKE CLAUDE ARGS: continue={}".format(getattr(args, "continue")))
+    asyncio.run(use_spyder(server))
+    print("FAKE CLAUDE DONE")
+    input()
+
+
+if __name__ == "__main__":
+    main()

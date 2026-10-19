@@ -5,20 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spyder-claude"
 version = "0.1.0.dev0"
-description = "Chat with Claude inside Spyder, with access to your consoles, variables, plots and editor"
+description = "Run Claude Code inside Spyder, with access to your consoles, variables, plots and editor"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     "spyder>=6.2.0.dev0",
-    "claude-agent-sdk>=0.2.167",
+    "spyder-terminal>=1.3.1",
 ]
 
 [project.optional-dependencies]
 test = ["pytest", "pytest-qt"]
 
 [project.entry-points."spyder.plugins"]
-claude_agent = "spyder_claude.plugin:ClaudeAgent"
+claude_code = "spyder_claude.plugin:ClaudeCode"
 
 [tool.setuptools.packages.find]
 include = ["spyder_claude*"]

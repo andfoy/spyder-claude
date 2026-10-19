@@ -4,7 +4,7 @@
 # Licensed under the terms of the MIT License
 
 """
-Run the Claude Code CLI in Spyder's terminal, connected to Spyder.
+Helpers to run the Claude Code CLI connected to Spyder.
 
 Users sign in to Claude Code themselves, so this works with Claude accounts
 as well as API keys. Spyder only hosts the terminal and passes the MCP server
@@ -22,8 +22,9 @@ import shlex
 import shutil
 import tempfile
 
-# Local imports
-from spyder_claude.protocol import MCP_SERVER_NAME
+# Name of Spyder's MCP server in Claude Code, which prefixes its tools
+# (e.g. ``mcp__spyder__execute_code``).
+MCP_SERVER_NAME = "spyder"
 
 
 class MCPConfigFile:
@@ -70,8 +71,27 @@ class MCPConfigFile:
             self._directory = None
 
 
-def claude_code_command(executable: str, config_path: str) -> str:
-    """Shell command that starts Claude Code connected to Spyder."""
-    return (
-        f"{shlex.quote(executable)} --mcp-config {shlex.quote(config_path)}"
-    )
+def claude_code_command(
+    executable: str,
+    config_path: str,
+    args: list[str] | None = None,
+    replace_shell: bool = os.name != "nt",
+) -> str:
+    """
+    Shell command that starts Claude Code connected to Spyder.
+
+    Parameters
+    ----------
+    executable: str
+        Claude Code executable.
+    config_path: str
+        Path of the MCP config file.
+    args: list[str], optional
+        Extra arguments for Claude Code (e.g. ``["--continue"]``).
+    replace_shell: bool, optional
+        Whether Claude Code replaces the shell (with ``exec``), so the
+        terminal closes when Claude Code exits. Not available on Windows.
+    """
+    parts = [executable, "--mcp-config", config_path] + (args or [])
+    command = " ".join(shlex.quote(part) for part in parts)
+    return f"exec {command}" if replace_shell else command

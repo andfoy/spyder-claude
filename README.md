@@ -1,10 +1,10 @@
 # spyder-claude
 
-A Spyder plugin to chat with Claude in a pane next to your editor, consoles
-and plots. Claude can run code in your IPython consoles, inspect your
-variables, look at your figures and see which file and selection you're
-working on, in addition to the usual Claude Code tools (reading and editing
-files, running shell commands, searching your project).
+A Spyder plugin that runs [Claude Code](https://code.claude.com) in a pane
+next to your editor, consoles and plots. Claude can run code in your IPython
+consoles, inspect your variables, look at your figures and see which file and
+selection you're working on, in addition to the usual Claude Code tools
+(reading and editing files, running shell commands, searching your project).
 
 **Status:** prototype.
 
@@ -12,10 +12,11 @@ files, running shell commands, searching your project).
 
 - Spyder with the MCP server plugin (`spyder/plugins/mcpserver`, currently on
   the `mcp-server-prototype` branch).
-- The [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk), which
-  bundles the Claude Code CLI.
-- Claude credentials: an `ANTHROPIC_API_KEY`, or a logged-in Claude Code
-  installation for local development.
+- [spyder-terminal](https://github.com/spyder-ide/spyder-terminal). Version
+  1.3.1 needs two small fixes to work with Spyder 6.2 (the removed
+  `spyder.config.gui.is_dark_interface` and `appearance/ui_theme`).
+- The Claude Code CLI, installed and on your `PATH`. Sign in with your Claude
+  account or an API key the first time it starts (or with `/login`).
 
 ## Installation
 
@@ -23,37 +24,48 @@ files, running shell commands, searching your project).
 pip install -e .
 ```
 
-Then restart Spyder and open the pane from **Window > Panes > Claude**.
+Then restart Spyder and open the pane from **Window > Panes > Claude Code**.
+A session starts the first time the pane is shown.
 
 ## How it works
 
 ```
-Claude pane (Qt) ─── AgentClient ── JSON-RPC over stdio ──► worker subprocess
-     ▲                                                      Claude Agent SDK
-     │ approvals, events                                          │
-     │                                                            │ MCP over HTTP
-     └── Spyder MCP server plugin ◄───────────────────────────────┘
-         (consoles, variables, plots, editor tools)
+Claude Code pane (spyder-terminal) ── runs ──► claude --mcp-config <file>
+                                                     │
+                                                     │ MCP over HTTP
+                                                     ▼
+                                   Spyder MCP server plugin
+                                   (consoles, variables, plots, editor)
 ```
 
-- The Agent SDK runs in a worker subprocess (`spyder_claude/worker.py`), like
-  Spyder's LSP and MCP servers, so its dependencies and event loop stay out
-  of the GUI process.
-- The agent reaches Spyder through its MCP server, the same way external
-  agents do. The pane starts the server if it's not running.
-- Tool calls that need permission are approved in the pane. Read-only Spyder
-  tools run without asking; running code, editing files and shell commands
-  ask first, with an option to always allow a tool for the session.
-- The agent only uses Spyder's MCP server and project settings (including
-  `CLAUDE.md` files). Your global Claude Code settings aren't loaded, so their
-  allow rules can't skip the pane's approvals.
+- The pane is spyder-terminal's: the plugin and its main widget inherit from
+  spyder-terminal's, so tabs, themes, fonts, find and shortcuts work the same
+  way. Each tab runs a Claude Code session instead of a shell.
+- Spyder starts its MCP server if needed and passes it to Claude Code with
+  `--mcp-config`. The config file contains the server's token, so it's only
+  readable by you and it's removed when Spyder closes. Your Claude Code
+  configuration isn't changed.
+- Claude Code replaces the shell, so a tab closes when its session ends
+  (e.g. with `/exit`). Use the options menu to start new sessions in the
+  current working directory, project or file directory, or to resume the
+  last conversation (`claude --continue`).
+- Permissions follow your Claude Code settings: Claude Code asks before
+  using Spyder's tools unless you allowed them (e.g. with auto mode).
+- The executable can be changed with the `claude_command` option.
 
 ## Tests
 
 ```bash
-pytest spyder_claude/tests
+QT_API=pyqt5 PYTEST_QT_API=pyqt5 pytest spyder_claude/tests
 ```
 
-`test_live.py` starts a full Spyder window and chats with the real model, so
-it only runs when `SPYDER_CLAUDE_LIVE=1` is set (it uses your credentials).
-Set `SPYDER_CLAUDE_SCREENSHOTS=<dir>` to save screenshots of the pane.
+The tests need a Qt binding with QtWebEngine. `test_plugin.py` replaces
+Claude Code with `tests/fake_claude.py`, which connects to Spyder's MCP server
+the same way, so it doesn't need credentials.
+
+`test_live_terminal.py` runs the real Claude Code with your credentials, so
+it only runs when `SPYDER_CLAUDE_LIVE=1` is set. Set
+`SPYDER_CLAUDE_SCREENSHOTS=<dir>` to save screenshots.
+
+QtWebEngine may crash when the test process exits, which can hide pytest's
+summary; use `--junitxml` to get the results.

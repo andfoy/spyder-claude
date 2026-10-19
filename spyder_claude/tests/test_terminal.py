@@ -51,8 +51,15 @@ def test_config_file_contents_and_removal():
     assert config.path is None
 
 
-def test_command_is_quoted():
-    command = claude_code_command("claude", "/tmp/a dir/mcp.json")
+def test_command():
+    command = claude_code_command(
+        "claude", "/tmp/a dir/mcp.json", ["--continue"], replace_shell=True
+    )
     assert shlex.split(command) == [
-        "claude", "--mcp-config", "/tmp/a dir/mcp.json"
+        "exec", "claude", "--mcp-config", "/tmp/a dir/mcp.json", "--continue"
     ]
+
+    command = claude_code_command(
+        "claude", "/tmp/mcp.json", replace_shell=False
+    )
+    assert shlex.split(command) == ["claude", "--mcp-config", "/tmp/mcp.json"]

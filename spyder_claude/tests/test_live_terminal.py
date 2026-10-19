@@ -13,7 +13,6 @@ terminal contents.
 """
 
 # Standard library imports
-import json
 import os
 import os.path as osp
 import shutil
@@ -25,7 +24,7 @@ import pytest
 from spyder.plugins.ipythonconsole.tests.conftest import SHELL_TIMEOUT
 
 # Local imports
-from spyder_claude.tests.test_live import main_window  # noqa: F401
+from spyder_claude.tests.conftest import read_terminal, send_keys
 
 pytestmark = [
     pytest.mark.skipif(
@@ -56,21 +55,6 @@ BANNER = "Claude Code v"
 DOWN = "\x1b[B"
 
 
-def read_terminal(term, qtbot) -> str:
-    """Text in the terminal buffer, including the scrollback."""
-    result = []
-    term.view.document.runJavaScript(
-        "spyder_terminal.default.getTerminalLines()", result.append
-    )
-    qtbot.waitUntil(lambda: bool(result), timeout=5000)
-    return result[0] or ""
-
-
-def send_keys(term, data: str) -> None:
-    """Send raw input to the terminal, as if typed by the user."""
-    term.view.document.runJavaScript(f"window.term.input({json.dumps(data)})")
-
-
 def save_artifacts(window, term, text, name):
     directory = os.environ.get("SPYDER_CLAUDE_SCREENSHOTS")
     if directory:
@@ -79,38 +63,19 @@ def save_artifacts(window, term, text, name):
             f.write(text)
 
 
-@pytest.fixture(autouse=True)
-def clean_claude_env(monkeypatch):
-    """
-    Remove variables set by a parent Claude Code session (e.g. when tests
-    are run by Claude Code), which change how the CLI behaves.
-    """
-    for name in list(os.environ):
-        if name.startswith("CLAUDE"):
-            monkeypatch.delenv(name)
-
-
-def test_claude_code_in_terminal(main_window, qtbot, tmp_path):  # noqa: F811
-    main_window.resize(1500, 950)
+def test_claude_code_in_terminal(main_window, qtbot, tmp_path):
     shell = main_window.ipyconsole.get_current_shellwidget()
     qtbot.waitUntil(
         lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT
     )
 
-    terminal = main_window.get_plugin("terminal")
-    terminal_widget = terminal.get_widget()
-    qtbot.waitUntil(terminal_widget.server_is_ready, timeout=60000)
-    terminal.set_current_cwd(str(tmp_path))
+    plugin = main_window.get_plugin("claude_code")
+    widget = plugin.get_widget()
+    qtbot.waitUntil(widget.server_is_ready, timeout=60000)
 
-    # Start Claude Code from the Claude pane
-    plugin = main_window.get_plugin("claude_agent")
-    terms_before = len(terminal_widget.get_terms())
-    plugin.open_in_terminal()
-    qtbot.waitUntil(
-        lambda: len(terminal_widget.get_terms()) == terms_before + 1,
-        timeout=60000,
-    )
-    term = terminal_widget.get_terms()[-1]
+    plugin.new_session(path=str(tmp_path))
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
+    term = widget.get_terms()[0]
     config_path = plugin._mcp_config.path
     assert config_path is not None and osp.exists(config_path)
 
