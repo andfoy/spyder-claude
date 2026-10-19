@@ -158,6 +158,28 @@ def claude_settings(
     return {"hooks": hooks}
 
 
+def add_server_command(executable: str, connection_info: dict) -> str:
+    """
+    Command that adds Spyder's MCP server to the user's Claude Code
+    configuration, for sessions started outside Spyder.
+
+    Parameters
+    ----------
+    executable: str
+        Claude Code executable.
+    connection_info: dict
+        The server's ``url`` and the HTTP ``headers`` to send.
+    """
+    server = {
+        "type": "http",
+        "url": connection_info["url"],
+        "headers": connection_info["headers"],
+    }
+    return join_command(
+        [executable, "mcp", "add-json", MCP_SERVER_NAME, json.dumps(server)]
+    )
+
+
 def claude_code_command(
     executable: str,
     config_path: str,

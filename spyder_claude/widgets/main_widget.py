@@ -31,6 +31,7 @@ class ClaudeCodeWidgetActions:
     ResumeConversation = "resume_claude_code_conversation_action"
     SetWorkingDirectory = "set_working_directory_to_session_folder_action"
     KeepPythonInSpyder = "keep_python_in_spyder_consoles_action"
+    CopyAddServerCommand = "copy_claude_code_add_server_command_action"
 
 
 CONSOLE_MODE_TEXTS = {
@@ -87,6 +88,12 @@ class ClaudeCodeWidget(TerminalMainWidget):
     """
     The pane is shown for the first time, so the sessions open when Spyder
     closed can be restored (or a new one started).
+    """
+
+    sig_add_server_command_requested = Signal()
+    """
+    The user wants to copy the command that connects Claude Code sessions
+    started outside Spyder to it.
     """
 
     sig_working_directory_requested = Signal(str)
@@ -223,7 +230,21 @@ class ClaudeCodeWidget(TerminalMainWidget):
             toggled=True,
             option="keep_python_in_spyder",
         )
-        for action in [self.set_workdir_action, keep_python_action]:
+        copy_command_action = self.create_action(
+            ClaudeCodeWidgetActions.CopyAddServerCommand,
+            text=_("Copy command to connect Claude Code to Spyder"),
+            tip=_(
+                "Copy a command that adds Spyder to Claude Code's "
+                "configuration, for sessions started outside Spyder"
+            ),
+            icon=self.create_icon("editcopy"),
+            triggered=self.sig_add_server_command_requested,
+        )
+        for action in [
+            self.set_workdir_action,
+            keep_python_action,
+            copy_command_action,
+        ]:
             self.add_item_to_menu(action, menu=self.get_options_menu())
 
         self.update_session_state()

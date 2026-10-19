@@ -24,7 +24,7 @@ import uuid
 
 # Third-party imports
 import pytest
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QApplication, QMessageBox
 
 from spyder.api.plugins import CallContext
 from spyder.plugins.ipythonconsole.tests.conftest import SHELL_TIMEOUT
@@ -518,6 +518,19 @@ def test_console_question_in_claude_code(
     plugin = main_window.get_plugin("claude_code")
     widget = plugin.get_widget()
     qtbot.waitUntil(widget.server_is_ready, timeout=60000)
+
+    # Sessions started outside Spyder can connect to it with a command,
+    # copied once Spyder's MCP server starts
+    QApplication.clipboard().clear()
+    plugin.copy_add_server_command()
+    qtbot.waitUntil(
+        lambda: "add-json" in QApplication.clipboard().text(), timeout=30000
+    )
+    args = shlex.split(QApplication.clipboard().text())
+    assert args[1:4] == ["mcp", "add-json", "spyder"]
+    assert json.loads(args[4])["url"] == main_window.get_plugin(
+        "mcp_server"
+    ).get_url()
 
     plugin.set_conf(
         "claude_command",

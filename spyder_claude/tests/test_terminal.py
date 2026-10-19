@@ -20,6 +20,7 @@ import pytest
 # Local imports
 from spyder_claude.terminal import (
     MCPConfigFile,
+    add_server_command,
     claude_code_command,
     claude_settings,
 )
@@ -78,6 +79,16 @@ def test_command():
         "claude", "/tmp/mcp.json", replace_shell=False
     )
     assert shlex.split(command) == ["claude", "--mcp-config", "/tmp/mcp.json"]
+
+
+def test_add_server_command():
+    info = {
+        "url": "http://127.0.0.1:8768/mcp",
+        "headers": {"Authorization": "Bearer a token"},
+    }
+    args = shlex.split(add_server_command("claude", info))
+    assert args[:4] == ["claude", "mcp", "add-json", "spyder"]
+    assert json.loads(args[4]) == {"type": "http", **info}
 
 
 def test_session_files(tmp_path):

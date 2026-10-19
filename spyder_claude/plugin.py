@@ -22,7 +22,7 @@ import time
 
 # Third-party imports
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QApplication, QMessageBox
 from spyder.api.plugin_registration.decorators import (
     on_plugin_available,
     on_plugin_teardown,
@@ -43,6 +43,7 @@ from spyder_claude.session_context import make_guidance
 from spyder_claude.sessions import ConsoleMode, Session
 from spyder_claude.terminal import (
     MCPConfigFile,
+    add_server_command,
     claude_code_command,
     claude_settings,
 )
@@ -126,6 +127,10 @@ class ClaudeCode(TerminalPlugin):
         super().on_initialize()
         self._mcp_config = MCPConfigFile()
         self._pending_sessions: list[tuple[str, list[str]]] = []
+
+        # Whether to copy the command to connect Claude Code to Spyder once
+        # the MCP server starts
+        self._copy_command_pending = False
         self._sessions: dict[str, Session] = {}
 
         # When each console started, to tell resumed conversations if the
@@ -140,6 +145,9 @@ class ClaudeCode(TerminalPlugin):
         widget.sig_console_setting_changed.connect(self._on_console_setting)
         widget.sig_working_directory_requested.connect(
             self._set_working_directory
+        )
+        widget.sig_add_server_command_requested.connect(
+            self.copy_add_server_command
         )
         widget.set_console_lister(self._list_consoles)
 
@@ -235,6 +243,25 @@ class ClaudeCode(TerminalPlugin):
                 self.switch_to_plugin()
                 return
         self.new_session(args=["--resume", conversation_id])
+
+    def copy_add_server_command(self) -> None:
+        """
+        Copy the command that adds Spyder to Claude Code's configuration,
+        so sessions started outside Spyder connect to it too.
+        """
+        mcp_server = self.get_plugin(Plugins.MCPServer, error=False)
+        if mcp_server is None:
+            return
+        info = mcp_server.get_connection_info()
+        if info is None:
+            # Copy it once the server starts
+            self._copy_command_pending = True
+            mcp_server.start_server()
+            return
+        self._copy_command_pending = False
+        QApplication.clipboard().setText(
+            add_server_command(self.get_conf("claude_command"), info)
+        )
 
     def show_conversations(self) -> None:
         """Let the user choose a conversation to resume."""
@@ -439,6 +466,8 @@ class ClaudeCode(TerminalPlugin):
     def _on_mcp_server_started(self, url: str) -> None:
         while self._pending_sessions:
             self._start_session(*self._pending_sessions.pop(0))
+        if self._copy_command_pending:
+            self.copy_add_server_command()
 
     def _on_mcp_server_stopped(self) -> None:
         if self._pending_sessions:
