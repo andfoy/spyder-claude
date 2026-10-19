@@ -670,14 +670,19 @@ class ClaudeCode(TerminalPlugin):
     def _ask_console_in_client(self, session: Session, context) -> None:
         """Ask which console to use in Claude Code, with an MCP form."""
         choices = self._console_choices(session)
+        # Claude Code shows the choices folded, so say how to see them first,
+        # before the message gets cut
         message = _(
             "{} wants to run code in Spyder. Which IPython console should it "
-            "use? It will keep using it; you can change it with the Console "
-            "button of Spyder's Claude Code pane."
+            "use? Press → to see the options. It will keep using it; you can "
+            "change it with the Console button of Spyder's Claude Code pane."
         ).format(session.name)
-        future = context.ask_user(
-            message, [text for text, _mode, _id in choices], _("Console")
+        texts = [text for text, _mode, _id in choices]
+        # A console of its own is the choice that can't get in the user's way
+        default = next(
+            text for text, mode, _id in choices if mode == ConsoleMode.New
         )
+        future = context.ask_user(message, texts, _("Console"), default)
 
         def on_answer(future):
             # It may have been answered in Spyder meanwhile, e.g. with the

@@ -534,6 +534,7 @@ def test_console_question_in_claude_code(
     assert "FAKE CLAUDE PROTOCOL: 2026-07-28" in text
     assert "FAKE CLAUDE ASKED: Claude 1 wants to run code in Spyder" in text
     assert "In a new console for this session" in text
+    assert "FAKE CLAUDE DEFAULT: In a new console for this session" in text
     assert "FAKE CLAUDE EXECUTED, error: False" in text
     assert not widget.question_bar.isVisible()
 
@@ -568,7 +569,7 @@ class AnsweringContext(CallContext):
     def __init__(self, answer):
         self.answer = answer
 
-    def ask_user(self, message, choices, title=""):
+    def ask_user(self, message, choices, title="", default=None):
         future = Future()
         future.set_result(
             next(choice for choice in choices if self.answer in choice)

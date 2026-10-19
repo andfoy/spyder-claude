@@ -38,8 +38,10 @@ def elicitation_callback():
         return None
 
     async def callback(context, params):
-        choices = params.requested_schema["properties"]["choice"]["enum"]
+        field = params.requested_schema["properties"]["choice"]
+        choices = field["enum"]
         print(f"FAKE CLAUDE ASKED: {params.message} {choices}")
+        print(f"FAKE CLAUDE DEFAULT: {field.get('default')}")
         if answer == "decline":
             return types.ElicitResult(action="decline")
         choice = next(c for c in choices if answer.lower() in c.lower())
