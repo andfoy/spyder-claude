@@ -74,5 +74,11 @@ class Session:
     console_opening: Future | None = None
     """Console being opened for the ``New`` mode, resolved with its id."""
 
+    asking_in_client: bool = False
+    """
+    Whether the pending question is asked in Claude Code (an MCP form),
+    instead of in a bar above the session's terminal.
+    """
+
     def is_asking(self) -> bool:
         return self.question is not None and not self.question.done()

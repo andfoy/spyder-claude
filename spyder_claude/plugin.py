@@ -577,7 +577,7 @@ class ClaudeCode(TerminalPlugin):
         elif mode:
             self.set_session_console(session_id, mode, console_id or None)
 
-    def _ask_console(self, caller, tool):
+    def _ask_console(self, caller, tool, context):
         """
         Choose the console for a tool call of a session that has no console
         set (see :class:`spyder_claude.sessions.ConsoleMode`).
@@ -595,9 +595,16 @@ class ClaudeCode(TerminalPlugin):
         if session.console_mode == ConsoleMode.Specific:
             return session.console_id
 
-        # Ask the user once, even if Claude makes several calls meanwhile
+        # Ask the user once, even if Claude makes several calls meanwhile.
+        # Ask in Claude Code when it can, where the user is looking, and
+        # else in a bar above the session's terminal.
         if not session.is_asking():
             session.question = Future()
+            session.asking_in_client = context.can_ask_user
+            if session.asking_in_client:
+                self._ask_console_in_client(session, context)
+            else:
+                self._report_waiting(session, context)
             self.get_widget().ask_console(session)
 
         result = Future()
@@ -609,10 +616,94 @@ class ClaudeCode(TerminalPlugin):
                 result.set_exception(error)
                 return
             # The answer is now the session's setting
-            self._chain(self._ask_console(caller, tool), result)
+            self._chain(self._ask_console(caller, tool, context), result)
 
         session.question.add_done_callback(on_answer)
         return result
+
+    def _console_choices(self, session: Session) -> list[tuple]:
+        """
+        Choices for the console of a session, as ``(text, mode,
+        console_id)``. An empty mode means not running the code.
+        """
+        consoles = self._list_consoles()
+        selected = [c for c in consoles if c["current"]]
+        choices = []
+        for console in selected:
+            choices.append(
+                (
+                    _("In {} (selected in Spyder)").format(console["name"]),
+                    ConsoleMode.Specific,
+                    console["id"],
+                )
+            )
+        choices.append(
+            (_("In a new console for this session"), ConsoleMode.New, None)
+        )
+        for console in consoles:
+            if not console["current"]:
+                choices.append(
+                    (
+                        _("In {}").format(console["name"]),
+                        ConsoleMode.Specific,
+                        console["id"],
+                    )
+                )
+        choices.append((_("Don't run it"), "", None))
+        return choices
+
+    def _ask_console_in_client(self, session: Session, context) -> None:
+        """Ask which console to use in Claude Code, with an MCP form."""
+        choices = self._console_choices(session)
+        message = _(
+            "{} wants to run code in Spyder. Which IPython console should it "
+            "use? It will keep using it; you can change it with the Console "
+            "button of Spyder's Claude Code pane."
+        ).format(session.name)
+        future = context.ask_user(
+            message, [text for text, _mode, _id in choices], _("Console")
+        )
+
+        def on_answer(future):
+            # It may have been answered in Spyder meanwhile, e.g. with the
+            # Console button
+            if not session.is_asking():
+                return
+            answer = future.result()
+            for text, mode, console_id in choices:
+                if text == answer:
+                    self._on_console_setting(
+                        session.id, mode, console_id or ""
+                    )
+                    return
+            # Declined or dismissed
+            self._on_console_setting(session.id, "", "")
+
+        future.add_done_callback(on_answer)
+
+    def _report_waiting(self, session: Session, context) -> None:
+        """
+        Tell Claude Code that the call is waiting for the user to answer in
+        Spyder, until they do. This also keeps it from giving up on the call.
+        """
+        message = _(
+            "Waiting for the user to choose a console in Spyder (in the bar "
+            "above {}'s terminal)"
+        ).format(session.name)
+        context.report_progress(message)
+
+        timer = QTimer(self)
+        timer.setInterval(60 * 1000)
+
+        def keep_waiting():
+            if session.is_asking():
+                context.report_progress(message)
+            else:
+                timer.stop()
+                timer.deleteLater()
+
+        timer.timeout.connect(keep_waiting)
+        timer.start()
 
     def _open_session_console(self, session: Session) -> Future:
         """Open a console for ``session`` and make it its console."""

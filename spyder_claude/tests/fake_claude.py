@@ -22,8 +22,30 @@ import subprocess
 import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+import mcp.types as types
 
 CODE = "fake_claude_value = 6 * 7"
+
+
+def elicitation_callback():
+    """
+    Answer questions from Spyder (MCP forms) like a user would, if
+    FAKE_CLAUDE_ELICIT is set: with the first choice containing its value,
+    or declining if it's "decline". Without it, the client can't be asked.
+    """
+    answer = os.environ.get("FAKE_CLAUDE_ELICIT")
+    if not answer:
+        return None
+
+    async def callback(context, params):
+        choices = params.requested_schema["properties"]["choice"]["enum"]
+        print(f"FAKE CLAUDE ASKED: {params.message} {choices}")
+        if answer == "decline":
+            return types.ElicitResult(action="decline")
+        choice = next(c for c in choices if answer.lower() in c.lower())
+        return types.ElicitResult(action="accept", content={"choice": choice})
+
+    return callback
 
 
 async def use_spyder(server: dict) -> None:
@@ -33,7 +55,9 @@ async def use_spyder(server: dict) -> None:
         async with streamable_http_client(
             server["url"], http_client=http
         ) as (read, write, *_):
-            async with ClientSession(read, write) as session:
+            async with ClientSession(
+                read, write, elicitation_callback=elicitation_callback()
+            ) as session:
                 await session.initialize()
                 tools = await session.list_tools()
                 names = sorted(tool.name for tool in tools.tools)

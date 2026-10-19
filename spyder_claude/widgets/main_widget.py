@@ -291,12 +291,6 @@ class ClaudeCodeWidget(TerminalMainWidget):
         if session is not None:
             index = self.tabwidget.indexOf(widget)
             self.tabwidget.setTabText(index, session.name)
-            tooltip = [session.name]
-            if session.title:
-                tooltip.append(session.title)
-            if session.cwd:
-                tooltip.append(session.cwd)
-            self.tabwidget.setTabToolTip(index, "\n".join(tooltip))
         self.update_session_state()
 
     # ---- Public API
@@ -415,6 +409,20 @@ class ClaudeCodeWidget(TerminalMainWidget):
             self.tabwidget.setTabIcon(
                 index, self.create_icon("help") if asking else QIcon()
             )
+            if session is not None:
+                tooltip = [session.name]
+                if asking:
+                    tooltip.append(
+                        _("Waiting for you to choose a console in its "
+                          "terminal")
+                        if session.asking_in_client
+                        else _("Waiting for you to choose a console")
+                    )
+                if session.title:
+                    tooltip.append(session.title)
+                if session.cwd:
+                    tooltip.append(session.cwd)
+                self.tabwidget.setTabToolTip(index, "\n".join(tooltip))
 
         session = self.get_session()
         self.console_button.setEnabled(session is not None)
@@ -425,7 +433,12 @@ class ClaudeCodeWidget(TerminalMainWidget):
             self._describe_console(session) if session else _("Console")
         )
 
-        if session is not None and session.is_asking():
+        # Questions asked in Claude Code are answered there
+        if (
+            session is not None
+            and session.is_asking()
+            and not session.asking_in_client
+        ):
             if self.question_bar.get_session_id() != session.id:
                 selected = [c for c in self._list_consoles() if c["current"]]
                 self.question_bar.ask(

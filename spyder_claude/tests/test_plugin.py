@@ -14,6 +14,7 @@ server the same way, so these tests don't need Claude credentials.
 import json
 import os
 import os.path as osp
+import shlex
 import stat
 import sys
 import uuid
@@ -69,6 +70,25 @@ def quiet_fake_claude(tmp_path):
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return str(path)
+
+
+@pytest.fixture
+def make_fake_claude(tmp_path):
+    """Make fake_claude executables with extra environment variables."""
+
+    def make(name, **env):
+        path = tmp_path / name
+        variables = " ".join(
+            f"{key}={shlex.quote(value)}" for key, value in env.items()
+        )
+        path.write_text(
+            "#!/bin/sh\n"
+            f"{variables} exec {sys.executable} {FAKE_CLAUDE} \"$@\"\n"
+        )
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return str(path)
+
+    return make
 
 
 def terminal_size(term, qtbot, fit=False):
@@ -478,3 +498,55 @@ def test_project_sessions(
     assert [s["id"] for s in plugin.get_conf("open_sessions")] == [outside]
     project_sessions = plugin._get_saved_project_sessions(str(project))
     assert [s["id"] for s in project_sessions] == [in_project]
+
+
+def test_console_question_in_claude_code(
+    main_window, qtbot, tmp_path, make_fake_claude
+):
+    """
+    When Claude Code can show forms, it asks which console to use itself,
+    instead of a bar in Spyder.
+    """
+    shell = main_window.ipyconsole.get_current_shellwidget()
+    qtbot.waitUntil(
+        lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT
+    )
+    plugin = main_window.get_plugin("claude_code")
+    widget = plugin.get_widget()
+    qtbot.waitUntil(widget.server_is_ready, timeout=60000)
+
+    plugin.set_conf(
+        "claude_command",
+        make_fake_claude("asking-claude", FAKE_CLAUDE_ELICIT="new console"),
+    )
+    plugin.new_session(path=str(tmp_path))
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
+    term = widget.get_terms()[0]
+    wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    text = " ".join(read_terminal(term, qtbot).split())
+    assert "FAKE CLAUDE ASKED: Claude 1 wants to run code in Spyder" in text
+    assert "In a new console for this session" in text
+    assert "FAKE CLAUDE EXECUTED, error: False" in text
+    assert not widget.question_bar.isVisible()
+
+    # The answer is the session's setting, like in Spyder's bar
+    session = widget.get_session(term)
+    assert session.console_mode == "new"
+    assert session.console_id is not None
+    assert not shell.is_defined("fake_claude_value")
+    send_keys(term, "\r")
+    qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
+
+    # Declining doesn't run the code
+    plugin.set_conf(
+        "claude_command",
+        make_fake_claude("declining-claude", FAKE_CLAUDE_ELICIT="decline"),
+    )
+    plugin.new_session(path=str(tmp_path))
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
+    term = widget.get_terms()[0]
+    wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    assert "FAKE CLAUDE EXECUTED, error: True" in read_terminal(term, qtbot)
+    assert widget.get_session(term).console_mode == "ask"
+    send_keys(term, "\r")
+    qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
