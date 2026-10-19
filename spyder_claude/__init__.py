@@ -3,6 +3,6 @@
 # Copyright © Spyder Project Contributors
 # Licensed under the terms of the MIT License
 
-"""Chat with Claude inside Spyder."""
+"""Run Claude Code inside Spyder."""
 
 __version__ = "0.1.0.dev0"
