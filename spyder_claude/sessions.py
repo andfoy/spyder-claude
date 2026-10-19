@@ -41,8 +41,17 @@ class Session:
     name: str
     """Name shown to the user and in Spyder's tools, e.g. ``Claude 2``."""
 
-    id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    """Id sent to Spyder's MCP server with every tool call."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    """
+    Id of the Claude Code conversation (its session id), also sent to
+    Spyder's MCP server with every tool call.
+    """
+
+    cwd: str | None = None
+    """Directory where the conversation started."""
+
+    title: str = ""
+    """Title of the conversation, if it was resumed."""
 
     config_path: str | None = None
     """MCP config file of the session."""

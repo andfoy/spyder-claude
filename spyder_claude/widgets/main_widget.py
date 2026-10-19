@@ -28,6 +28,7 @@ from spyder_claude.widgets.console_question import ConsoleQuestionBar
 
 class ClaudeCodeWidgetActions:
     ResumeSession = "resume_claude_code_session_action"
+    ResumeConversation = "resume_claude_code_conversation_action"
 
 
 CONSOLE_MODE_TEXTS = {
@@ -77,6 +78,15 @@ class ClaudeCodeWidget(TerminalMainWidget):
         Id of the console for the ``Specific`` mode, or an empty string.
     """
 
+    sig_conversations_requested = Signal()
+    """The user wants to choose a conversation to resume."""
+
+    sig_restore_requested = Signal()
+    """
+    The pane is shown for the first time, so the sessions open when Spyder
+    closed can be restored (or a new one started).
+    """
+
     sig_session_closed = Signal(str)
     """
     The tab of a session was closed.
@@ -92,6 +102,7 @@ class ClaudeCodeWidget(TerminalMainWidget):
         self._session_requested = False
         self._closing_term = False
         self._pending_session: Session | None = None
+        self._restored = False
         self._list_consoles: Callable[[], list] = list
         super().__init__(name, plugin, parent)
 
@@ -165,25 +176,41 @@ class ClaudeCodeWidget(TerminalMainWidget):
             ),
             triggered=lambda: self.request_session(args=["--continue"]),
         )
-        self.add_item_to_menu(
-            resume_action,
-            menu=self.get_options_menu(),
-            section=TerminalMainWidgetMenuSections.New,
+        resume_conversation_action = self.create_action(
+            ClaudeCodeWidgetActions.ResumeConversation,
+            text=_("Resume conversation..."),
+            tip=_(
+                "Choose a previous conversation to resume, in the folder "
+                "where it started"
+            ),
+            triggered=lambda: self.sig_conversations_requested.emit(),
         )
+        for action in [resume_action, resume_conversation_action]:
+            self.add_item_to_menu(
+                action,
+                menu=self.get_options_menu(),
+                section=TerminalMainWidgetMenuSections.New,
+            )
 
     def change_visibility(self, enable, force_focus=None):
         super().change_visibility(enable, force_focus)
         if enable:
             self.refresh_layout()
 
-        # Start a session the first time the pane is shown
+        # Restore the sessions open when Spyder closed (or start one) the
+        # first time the pane is shown, and start one if it's shown again
+        # without sessions
         if (
             enable
             and self.server_ready
             and not self.get_terms()
             and not self._session_requested
         ):
-            self.request_session()
+            if self._restored:
+                self.request_session()
+            else:
+                self._restored = True
+                self.sig_restore_requested.emit()
 
     # ---- TerminalMainWidget API
     # -------------------------------------------------------------------------
@@ -228,7 +255,12 @@ class ClaudeCodeWidget(TerminalMainWidget):
         if session is not None:
             index = self.tabwidget.indexOf(widget)
             self.tabwidget.setTabText(index, session.name)
-            self.tabwidget.setTabToolTip(index, session.name)
+            tooltip = [session.name]
+            if session.title:
+                tooltip.append(session.title)
+            if session.cwd:
+                tooltip.append(session.cwd)
+            self.tabwidget.setTabToolTip(index, "\n".join(tooltip))
         self.update_session_state()
 
     # ---- Public API
@@ -239,6 +271,12 @@ class ClaudeCodeWidget(TerminalMainWidget):
         """Ask the plugin to start a new Claude Code session."""
         self._session_requested = True
         self.sig_session_requested.emit(path or "", args or [])
+
+    def get_default_path(self) -> str:
+        """Directory where sessions start by default."""
+        if self.project_path is not None:
+            return self.project_path
+        return self.current_cwd
 
     def new_session_name(self) -> str:
         """Name for a new session, e.g. ``Claude 2``."""

@@ -16,6 +16,7 @@ import os
 import os.path as osp
 import stat
 import sys
+import uuid
 
 # Third-party imports
 import pytest
@@ -23,11 +24,14 @@ import pytest
 from spyder.plugins.ipythonconsole.tests.conftest import SHELL_TIMEOUT
 
 # Local imports
+from spyder_claude.conversations import list_conversations
 from spyder_claude.tests.conftest import (
     read_terminal,
     save_screenshot,
     send_keys,
 )
+from spyder_claude.tests.test_conversations import save_conversation
+from spyder_claude.widgets.conversations_dialog import ConversationsDialog
 
 pytest.importorskip("spyder_terminal")
 pytestmark = pytest.mark.skipif(
@@ -35,6 +39,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 FAKE_CLAUDE = osp.join(osp.dirname(__file__), "fake_claude.py")
+
+
+@pytest.fixture(autouse=True)
+def claude_config(clean_claude_env, tmp_path, monkeypatch):
+    """Keep the tests away from the user's saved conversations."""
+    config_dir = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+    return config_dir
 
 
 @pytest.fixture
@@ -104,6 +116,11 @@ def test_session_connects_to_spyder(
     session = widget.get_session(term)
     assert (session.console_mode, session.console_id) == ("specific", "1/A")
     assert widget.console_button.text() == "Console 1/A"
+
+    # The session's id is the conversation's
+    text = read_terminal(term, qtbot)
+    assert f"FAKE CLAUDE SESSION: {session.id}" in text
+    uuid.UUID(session.id)
 
     # The session identified itself to Spyder
     mcp_server = main_window.get_plugin("mcp_server")
@@ -241,6 +258,96 @@ def test_session_consoles(main_window, qtbot, tmp_path, fake_claude):
     )
     qtbot.waitUntil(lambda: session.console_mode == "ask", timeout=10000)
     assert session.console_id is None
+
+    send_keys(term, "\r")
+    qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
+
+
+def test_resume_conversations(
+    main_window, qtbot, tmp_path, fake_claude, claude_config
+):
+    """Conversations are resumed in the folder where they started."""
+    shell = main_window.ipyconsole.get_current_shellwidget()
+    qtbot.waitUntil(
+        lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+    conversation_id = save_conversation(
+        claude_config,
+        project,
+        [{"type": "ai-title", "aiTitle": "Plot the results"}],
+    )
+
+    plugin = main_window.get_plugin("claude_code")
+    plugin.set_conf("claude_command", fake_claude)
+    widget = plugin.get_widget()
+    mcp_server = main_window.get_plugin("mcp_server")
+    bar = widget.question_bar
+    qtbot.waitUntil(widget.server_is_ready, timeout=60000)
+
+    # The dialog lists saved conversations from every folder
+    dialog = ConversationsDialog(list_conversations(), parent=widget)
+    assert dialog.get_conversation().id == conversation_id
+    assert dialog.tree.topLevelItem(0).text(1) == str(project)
+    dialog.search.setText("no such thing")
+    assert dialog.get_conversation() is None
+    dialog.search.setText("plot")
+    assert dialog.get_conversation().id == conversation_id
+
+    # Resuming it starts Claude Code in its folder, even if it's not
+    # Spyder's working directory and another project is open
+    other_project = tmp_path / "other"
+    other_project.mkdir()
+    widget.set_project_path(str(other_project))
+    plugin.resume_conversation(conversation_id)
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
+    term = widget.get_terms()[0]
+    qtbot.waitUntil(bar.isVisible, timeout=60000)
+    bar.selected_button.click()
+    wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    text = read_terminal(term, qtbot)
+    assert f"FAKE CLAUDE RESUME: {conversation_id}" in text
+    assert f"FAKE CLAUDE CWD: {project}" in text
+
+    # The session is the conversation, also for Spyder's tools
+    session = widget.get_session(term)
+    assert session.id == conversation_id
+    assert "Plot the results" in widget.tabwidget.tabToolTip(0)
+    assert str(project) in widget.tabwidget.tabToolTip(0)
+    assert [c.id for c in mcp_server.get_clients()] == [conversation_id]
+
+    # Resuming it again shows its tab instead of a second session
+    plugin.resume_conversation(conversation_id)
+    qtbot.wait(1000)
+    assert len(widget.get_terms()) == 1
+    dialog = ConversationsDialog(
+        list_conversations(), {conversation_id}, parent=widget
+    )
+    assert "(open)" in dialog.tree.topLevelItem(0).text(0)
+
+    send_keys(term, "\r")
+    qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
+    widget.unset_project_path()
+
+    # Sessions open when Spyder closed are restored, skipping the ones that
+    # have nothing to resume
+    plugin.set_conf(
+        "open_sessions",
+        [
+            {"id": str(uuid.uuid4()), "cwd": str(tmp_path)},
+            {"id": conversation_id, "cwd": str(project)},
+        ],
+    )
+    plugin.restore_sessions()
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 1, timeout=60000)
+    term = widget.get_terms()[0]
+    qtbot.waitUntil(bar.isVisible, timeout=60000)
+    bar.selected_button.click()
+    wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    text = read_terminal(term, qtbot)
+    assert f"FAKE CLAUDE RESUME: {conversation_id}" in text
+    assert f"FAKE CLAUDE CWD: {project}" in text
 
     send_keys(term, "\r")
     qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)

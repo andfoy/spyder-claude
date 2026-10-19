@@ -15,6 +15,7 @@ Enter before exiting.
 import argparse
 import asyncio
 import json
+import os
 
 # Third-party imports
 import httpx2
@@ -47,12 +48,17 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mcp-config", required=True)
     parser.add_argument("--continue", action="store_true")
+    parser.add_argument("--resume")
+    parser.add_argument("--session-id")
     args = parser.parse_args()
 
     with open(args.mcp_config) as f:
         server = json.load(f)["mcpServers"]["spyder"]
 
     print("FAKE CLAUDE ARGS: continue={}".format(getattr(args, "continue")))
+    print(f"FAKE CLAUDE RESUME: {args.resume}")
+    print(f"FAKE CLAUDE SESSION: {args.session_id}")
+    print(f"FAKE CLAUDE CWD: {os.getcwd()}")
     asyncio.run(use_spyder(server))
     print("FAKE CLAUDE DONE")
     input()

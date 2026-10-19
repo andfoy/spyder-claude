@@ -30,8 +30,14 @@ from spyder_terminal.config import CONF_DEFAULTS as TERMINAL_CONF_DEFAULTS
 from spyder_terminal.terminalplugin import TerminalPlugin
 
 # Local imports
+from spyder_claude.conversations import (
+    find_conversation,
+    last_conversation_in,
+    list_conversations,
+)
 from spyder_claude.sessions import ConsoleMode, Session
 from spyder_claude.terminal import MCPConfigFile, claude_code_command
+from spyder_claude.widgets.conversations_dialog import ConversationsDialog
 from spyder_claude.widgets.main_widget import ClaudeCodeWidget
 
 logger = logging.getLogger(__name__)
@@ -66,12 +72,17 @@ class ClaudeCode(TerminalPlugin):
     WIDGET_CLASS = ClaudeCodeWidget
     CONF_SECTION = NAME
     CONF_FILE = True
-    CONF_VERSION = "0.1.0"
+    CONF_VERSION = "0.2.0"
     CONF_DEFAULTS = [
         (CONF_SECTION, {
             **TERMINAL_OPTIONS,
             # Claude Code executable
             "claude_command": "claude",
+            # Resume the conversations open when Spyder closed
+            "restore_sessions": True,
+            # Conversations open when Spyder closed, as dicts with their
+            # "id" and "cwd"
+            "open_sessions": [],
         }),
         ("shortcuts", SHORTCUTS),
     ]
@@ -103,6 +114,8 @@ class ClaudeCode(TerminalPlugin):
 
         widget = self.get_widget()
         widget.sig_session_requested.connect(self._on_session_requested)
+        widget.sig_restore_requested.connect(self.restore_sessions)
+        widget.sig_conversations_requested.connect(self.show_conversations)
         widget.sig_session_closed.connect(self._on_session_closed)
         widget.sig_console_setting_changed.connect(self._on_console_setting)
         widget.set_console_lister(self._list_consoles)
@@ -144,6 +157,14 @@ class ClaudeCode(TerminalPlugin):
         pass
 
     def on_close(self, cancelable=False):
+        # Remember the open conversations to resume them next time
+        self.set_conf(
+            "open_sessions",
+            [
+                {"id": session.id, "cwd": session.cwd}
+                for session in self.get_widget().get_sessions()
+            ],
+        )
         result = super().on_close(cancelable)
         self._mcp_config.remove()
         return result
@@ -169,6 +190,51 @@ class ClaudeCode(TerminalPlugin):
         self.get_widget().request_session(path, args)
         self.switch_to_plugin()
 
+    def resume_conversation(self, conversation_id: str) -> None:
+        """
+        Resume a Claude Code conversation, in the directory where it
+        started, or show its tab if it's open.
+        """
+        widget = self.get_widget()
+        for term in widget.get_terms():
+            session = widget.get_session(term)
+            if session is not None and session.id == conversation_id:
+                widget.tabwidget.setCurrentWidget(term)
+                self.switch_to_plugin()
+                return
+        self.new_session(args=["--resume", conversation_id])
+
+    def show_conversations(self) -> None:
+        """Let the user choose a conversation to resume."""
+        widget = self.get_widget()
+        dialog = ConversationsDialog(
+            list_conversations(),
+            {session.id for session in widget.get_sessions()},
+            parent=widget,
+        )
+        if dialog.exec_():
+            conversation = dialog.get_conversation()
+            if conversation is not None:
+                self.resume_conversation(conversation.id)
+
+    def restore_sessions(self) -> None:
+        """
+        Resume the conversations open when Spyder closed, or start a new
+        session if there are none.
+        """
+        restored = False
+        if self.get_conf("restore_sessions"):
+            for saved in self.get_conf("open_sessions"):
+                conversation = find_conversation(saved.get("id", ""))
+                # Sessions closed before using them have nothing to resume
+                if conversation is not None and conversation.can_resume():
+                    self.get_widget().request_session(
+                        args=["--resume", conversation.id]
+                    )
+                    restored = True
+        if not restored:
+            self.get_widget().request_session()
+
     # ---- Private API
     # -------------------------------------------------------------------------
     def _on_session_requested(self, path: str, args: list[str]) -> None:
@@ -193,7 +259,29 @@ class ClaudeCode(TerminalPlugin):
 
     def _start_session(self, path: str, args: list[str]) -> None:
         widget = self.get_widget()
-        session = Session(widget.new_session_name())
+        args = list(args)
+        path = path or widget.get_default_path()
+
+        # Continue the last conversation of the directory by its id, so the
+        # session knows which conversation it is
+        if "--continue" in args:
+            last = last_conversation_in(path)
+            if last is not None:
+                args.remove("--continue")
+                args += ["--resume", last.id]
+
+        if "--resume" in args:
+            # Conversations can only be resumed where they started
+            conversation_id = args[args.index("--resume") + 1]
+            conversation = find_conversation(conversation_id)
+            session = Session(widget.new_session_name(), id=conversation_id)
+            if conversation is not None:
+                path = conversation.cwd if conversation.can_resume() else path
+                session.title = conversation.title
+        else:
+            session = Session(widget.new_session_name())
+            args = ["--session-id", session.id] + args
+        session.cwd = path
         self._sessions[session.id] = session
 
         # Each session identifies itself, so tools can tell sessions apart
