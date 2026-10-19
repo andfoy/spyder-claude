@@ -528,6 +528,10 @@ def test_console_question_in_claude_code(
     term = widget.get_terms()[0]
     wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
     text = " ".join(read_terminal(term, qtbot).split())
+    # Like Claude Code, it uses the 2026-07-28 protocol, where the question
+    # comes back as the call's result and the call is made again with the
+    # answer
+    assert "FAKE CLAUDE PROTOCOL: 2026-07-28" in text
     assert "FAKE CLAUDE ASKED: Claude 1 wants to run code in Spyder" in text
     assert "In a new console for this session" in text
     assert "FAKE CLAUDE EXECUTED, error: False" in text

@@ -20,7 +20,7 @@ import subprocess
 
 # Third-party imports
 import httpx2
-from mcp.client.session import ClientSession
+from mcp.client.client import Client
 from mcp.client.streamable_http import streamable_http_client
 import mcp.types as types
 
@@ -52,21 +52,19 @@ async def use_spyder(server: dict) -> None:
     async with httpx2.AsyncClient(
         headers=server["headers"], timeout=60
     ) as http:
-        async with streamable_http_client(
-            server["url"], http_client=http
-        ) as (read, write, *_):
-            async with ClientSession(
-                read, write, elicitation_callback=elicitation_callback()
-            ) as session:
-                await session.initialize()
-                tools = await session.list_tools()
-                names = sorted(tool.name for tool in tools.tools)
-                print("FAKE CLAUDE TOOLS:", " ".join(names))
+        # Like Claude Code, use the newest protocol the server supports
+        async with Client(
+            streamable_http_client(server["url"], http_client=http),
+            mode="auto",
+            elicitation_callback=elicitation_callback(),
+        ) as client:
+            print("FAKE CLAUDE PROTOCOL:", client.protocol_version)
+            tools = await client.list_tools()
+            names = sorted(tool.name for tool in tools.tools)
+            print("FAKE CLAUDE TOOLS:", " ".join(names))
 
-                result = await session.call_tool(
-                    "execute_code", {"code": CODE}
-                )
-                print("FAKE CLAUDE EXECUTED, error:", result.is_error)
+            result = await client.call_tool("execute_code", {"code": CODE})
+            print("FAKE CLAUDE EXECUTED, error:", result.is_error)
 
 
 def run_hooks(settings_path: str, event_name: str, event: dict) -> list:
