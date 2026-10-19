@@ -127,14 +127,17 @@ def test_session_context(tmp_path):
         "resume_note": "The consoles were restarted.",
     }))
 
-    def run(source):
+    def run(source, event="SessionStart"):
         return subprocess.run(
             [sys.executable, "-I", session_context.__file__, str(path)],
-            input=json.dumps({"source": source}),
+            input=json.dumps({"hook_event_name": event, "source": source}),
             capture_output=True,
             text=True,
             check=True,
         ).stdout
+
+    # Without Spyder's MCP server, prompts get no notes
+    assert run("UserPromptSubmit", event="UserPromptSubmit") == ""
 
     started = run("startup")
     assert "execute_code" in started

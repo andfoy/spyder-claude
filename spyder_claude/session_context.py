@@ -9,7 +9,10 @@ Claude Code hook that tells Claude how to work in Spyder.
 It runs when a session starts or a conversation is resumed (a
 ``SessionStart`` hook), and prints context that Claude Code adds to the
 conversation: how to use Spyder's consoles and Editor and, for resumed
-conversations, the state of Spyder's consoles. Unlike
+conversations, the state of Spyder's consoles. When the user sends a prompt
+(a ``UserPromptSubmit`` hook), it adds what happened in Spyder since the
+session last heard from it (e.g. another agent opened a project), which it
+gets from Spyder's MCP server. Unlike
 ``--append-system-prompt``, which is fixed with the conversation's first
 request, this also reaches conversations started outside Spyder and stays
 current when they're resumed.
@@ -19,13 +22,16 @@ Python::
 
     python -I session_context.py CONTEXT_FILE < event.json
 
-where ``CONTEXT_FILE`` is a JSON file with the ``guidance`` and, for
-resumed conversations, a ``resume_note``.
+where ``CONTEXT_FILE`` is a JSON file with the ``guidance``, for resumed
+conversations a ``resume_note``, and the ``notes_url``, ``authorization``
+and ``client_id`` to get the session's notes.
 """
 
 # Standard library imports
 import json
 import sys
+import urllib.parse
+import urllib.request
 
 GUIDANCE = """\
 You're running inside Spyder, a scientific Python IDE, connected to it \
@@ -53,6 +59,25 @@ def make_guidance(python_blocked: bool) -> str:
     return GUIDANCE.format(guard=GUARD if python_blocked else "")
 
 
+def get_notes(context: dict) -> list[str]:
+    """Notes about what happened in Spyder, from its MCP server."""
+    if not context.get("notes_url"):
+        return []
+    url = context["notes_url"] + "?" + urllib.parse.urlencode(
+        {"client": context.get("client_id", "")}
+    )
+    request = urllib.request.Request(
+        url, headers={"Authorization": context.get("authorization", "")}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return json.load(response).get("notes", [])
+    except Exception:
+        # Spyder may be busy or closing; the notes come with the next tool
+        # call anyway
+        return []
+
+
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
@@ -60,6 +85,15 @@ def main(argv=None) -> int:
             context = json.load(f)
         event = json.load(sys.stdin)
     except (IndexError, OSError, ValueError):
+        return 0
+
+    if event.get("hook_event_name") == "UserPromptSubmit":
+        notes = get_notes(context)
+        if notes:
+            print(
+                "Since your last call to Spyder:\n"
+                + "\n".join(f"- {note}" for note in notes)
+            )
         return 0
 
     parts = [context.get("guidance", "")]

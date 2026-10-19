@@ -27,7 +27,7 @@ from spyder.api.plugin_registration.decorators import (
     on_plugin_available,
     on_plugin_teardown,
 )
-from spyder.api.plugins import ExposedCallError, Plugins
+from spyder.api.plugins import ExposedCallError, Plugins, current_caller
 from spyder.api.plugins.exposed import calling_as
 from spyder.api.translations import _
 from spyder_terminal.config import CONF_DEFAULTS as TERMINAL_CONF_DEFAULTS
@@ -330,6 +330,12 @@ class ClaudeCode(TerminalPlugin):
         sessions = self._sessions_in(path)
         self._save_project_sessions(path, sessions)
 
+        # A session that switches projects itself (with a tool) keeps
+        # working
+        caller = current_caller()
+        if caller is not None:
+            sessions = [s for s in sessions if s.id != caller.id]
+
         # Ask before stopping sessions that are using Spyder
         mcp_server = self.get_plugin(Plugins.MCPServer)
         busy = mcp_server.get_busy_clients()
@@ -481,14 +487,22 @@ class ClaudeCode(TerminalPlugin):
         # conversation, unlike --append-system-prompt) and keep its Python in
         # Spyder's consoles
         keep_python = self.get_conf("keep_python_in_spyder")
+        connection = mcp_server.get_connection_info()
         context_path = self._mcp_config.write_json(
             session.id,
             "context",
             {
                 "guidance": make_guidance(keep_python),
                 "resume_note": resume_note,
+                # To get the notes Spyder leaves for the session
+                "notes_url": mcp_server.get_notes_url(),
+                "authorization": connection["headers"]["Authorization"],
+                "client_id": session.id,
             },
         )
+
+        # It gets notes about what happens in Spyder from the start
+        mcp_server.register_client(session.id, session.name)
         settings_path = self._mcp_config.write_json(
             session.id,
             "settings",
@@ -518,6 +532,7 @@ class ClaudeCode(TerminalPlugin):
         mcp_server = self.get_plugin(Plugins.MCPServer, error=False)
         if mcp_server is not None:
             mcp_server.set_client_argument(session_id, "console_id", None)
+            mcp_server.unregister_client(session_id)
 
     # ---- Consoles of sessions
     # -------------------------------------------------------------------------

@@ -11,18 +11,22 @@ server the same way, so these tests don't need Claude credentials.
 """
 
 # Standard library imports
+from concurrent.futures import Future
 import json
 import os
 import os.path as osp
 import shlex
 import stat
+import subprocess
 import sys
+import threading
 import uuid
 
 # Third-party imports
 import pytest
 from qtpy.QtWidgets import QMessageBox
 
+from spyder.api.plugins import CallContext
 from spyder.plugins.ipythonconsole.tests.conftest import SHELL_TIMEOUT
 
 # Local imports
@@ -549,4 +553,128 @@ def test_console_question_in_claude_code(
     assert "FAKE CLAUDE EXECUTED, error: True" in read_terminal(term, qtbot)
     assert widget.get_session(term).console_mode == "ask"
     send_keys(term, "\r")
+    qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)
+
+
+class AnsweringContext(CallContext):
+    """Call context of a client whose user answers with ``answer``."""
+
+    can_ask_user = True
+
+    def __init__(self, answer):
+        self.answer = answer
+
+    def ask_user(self, message, choices, title=""):
+        future = Future()
+        future.set_result(
+            next(choice for choice in choices if self.answer in choice)
+        )
+        return future
+
+
+def run_session_hook(qtbot, session, event_name, **event):
+    """
+    Run a session's hooks for an event like Claude Code, and get stdout.
+
+    They run in another thread, like in Claude Code's process, since they
+    may need Spyder's main thread (e.g. to get notes from its MCP server).
+    """
+    with open(session.config_path.replace("mcp-", "settings-")) as f:
+        settings = json.load(f)
+    commands = [
+        hook["command"]
+        for group in settings["hooks"].get(event_name, [])
+        for hook in group["hooks"]
+    ]
+    outputs = []
+
+    def run():
+        for command in commands:
+            outputs.append(
+                subprocess.run(
+                    command,
+                    shell=True,
+                    input=json.dumps({"hook_event_name": event_name, **event}),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                ).stdout
+            )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    qtbot.waitUntil(lambda: not thread.is_alive(), timeout=30000)
+    return "".join(outputs)
+
+
+def test_session_switches_project(
+    main_window, qtbot, tmp_path, quiet_fake_claude, claude_config
+):
+    """
+    A session that opens another project keeps working, and the other
+    sessions are told.
+    """
+    shell = main_window.ipyconsole.get_current_shellwidget()
+    qtbot.waitUntil(
+        lambda: shell._prompt_html is not None, timeout=SHELL_TIMEOUT
+    )
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    in_project = save_conversation(claude_config, first)
+    outside = save_conversation(claude_config, elsewhere)
+
+    plugin = main_window.get_plugin("claude_code")
+    plugin.set_conf("claude_command", quiet_fake_claude)
+    widget = plugin.get_widget()
+    mcp_server = main_window.get_plugin("mcp_server")
+    projects = main_window.get_plugin("project_explorer")
+    qtbot.waitUntil(widget.server_is_ready, timeout=60000)
+    projects.open_project(path=str(first), restart_console=False)
+
+    plugin.resume_conversation(in_project)
+    plugin.resume_conversation(outside)
+    qtbot.waitUntil(lambda: len(widget.get_terms()) == 2, timeout=60000)
+    for term in widget.get_terms():
+        wait_for_text(term, qtbot, "FAKE CLAUDE DONE")
+    sessions = {s.id: s for s in widget.get_sessions()}
+
+    # Nothing happened yet
+    assert run_session_hook(qtbot, sessions[outside], "UserPromptSubmit") == ""
+
+    # The session of the first project opens the second one, after the user
+    # confirms it in Claude Code
+    results = []
+    mcp_server._dispatcher.call(
+        "open_project",
+        {"path": str(second)},
+        {"id": in_project, "name": sessions[in_project].name},
+        lambda content, is_error: results.append((content, is_error)),
+        AnsweringContext("Open"),
+    )
+    qtbot.waitUntil(lambda: bool(results), timeout=SHELL_TIMEOUT)
+    assert not results[0][1], results
+    assert projects.get_active_project_path() == str(second)
+
+    # It keeps working, although its conversation is in the first project
+    qtbot.wait(1000)
+    assert sorted(s.id for s in widget.get_sessions()) == sorted(
+        [in_project, outside]
+    )
+
+    # The other session is told when the user sends it a prompt, once
+    output = run_session_hook(qtbot, sessions[outside], "UserPromptSubmit")
+    name = sessions[in_project].name
+    assert f"{name} opened the project {second}" in output
+    assert f"{name} closed the project {first}" in output
+    for session_id in [outside, in_project]:
+        assert (
+            run_session_hook(qtbot, sessions[session_id], "UserPromptSubmit")
+            == ""
+        )
+
+    for term in widget.get_terms():
+        send_keys(term, "\r")
     qtbot.waitUntil(lambda: not widget.get_terms(), timeout=20000)

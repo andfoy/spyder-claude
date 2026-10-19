@@ -128,20 +128,16 @@ def claude_settings(
     allowed_commands: list[str], optional
         Commands to allow anyway, e.g. ``["pytest"]``.
     """
+    context_hook = {
+        "type": "command",
+        "command": hook_command("session_context.py", context_path),
+        "timeout": 10,
+    }
     hooks = {
-        "SessionStart": [
-            {
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": hook_command(
-                            "session_context.py", context_path
-                        ),
-                        "timeout": 10,
-                    }
-                ]
-            }
-        ]
+        # Guidance about Spyder, and what happened in Spyder since the
+        # session last heard from it
+        "SessionStart": [{"hooks": [context_hook]}],
+        "UserPromptSubmit": [{"hooks": [context_hook]}],
     }
     if keep_python_in_spyder:
         allow = []
